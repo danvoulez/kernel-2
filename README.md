@@ -15,6 +15,10 @@ templates tipados, proveniência, eventos, ponteiros e blobs endereçados por co
   evitando atualizações perdidas.
 - Leituras verificam novamente o hash, inclusive para blobs, e denunciam corrupção.
 - O grafo pode ser navegado para trás (causas) ou para frente (efeitos).
+- O banco usa WAL, `synchronous=FULL`, foreign keys, timeout de contenção e triggers que
+  impedem `UPDATE`/`DELETE` de objetos, arestas e eventos.
+- Slots autenticados reivindicam exatamente um card por lease; conclusões tardias são
+  recusadas e toda conclusão exige chave de idempotência.
 
 ### A âncora de gênese
 
@@ -57,6 +61,7 @@ engine --db engine.db genesis-template programa.schema.json
 engine --db engine.db create programa HASH_DO_TEMPLATE programa.json
 engine --db engine.db set-pointer programas/ativo HASH_DO_PROGRAMA
 engine --db engine.db lineage HASH_DO_PROGRAMA
+engine --db engine.db audit
 ```
 
 O CLI escreve JSON em `stdout` e erros operacionais em formato de erro do `argparse`, o que
@@ -73,9 +78,18 @@ with Store("engine.db") as engine:
     engine.set_pointer("programas/ativo", programa.hash)
 ```
 
+## Sessões seguras
+
+`Sessions` é a fronteira operacional mínima. Slots possuem token armazenado apenas como
+hash, ferramentas permitidas e duração máxima. `begin` escolhe deterministicamente o card
+disponível de maior prioridade dentro de uma transação; o lease aleatório impede que outra
+sessão conclua o trabalho. `end` rejeita lease incorreto ou vencido, grava saída e evento na
+mesma transação e torna retries seguros por chave de idempotência. Falhas de autenticação
+deliberadamente parecem slots inexistentes.
+
 ## Escopo e próximos passos
 
-O pacote ainda não abre endpoints MCP nem executa código. Essa fronteira é deliberada: o
-store é a raiz auditável sobre a qual serão construídos, em ordem, inventário/fila de jobs,
-cards e travas de sessão, circuitos de decisão e calendário. Executores futuros devem chamar
-esta API por operações curadas; nunca receber uma ferramenta de shell livre.
+O pacote ainda não abre transporte MCP nem executa código. Essa fronteira é deliberada: o
+kernel já implementa a máquina de estados e a autenticação, e um adaptador de transporte deve
+apenas mapear chamadas MCP para estas operações curadas. Inventário/fila de jobs, circuitos
+de decisão e calendário continuam fora deste marco. Executores nunca devem receber shell livre.

@@ -84,3 +84,10 @@ def test_database_tamper_is_detected(store: Store):
     obj = store.create("programa", schema.hash, {"nome": "safe"})
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         store.db.execute("UPDATE objetos SET corpo_json = ? WHERE hash = ?", ('{"nome":"unsafe"}', obj.hash))
+
+
+def test_full_integrity_audit(store: Store):
+    schema = template(store)
+    obj = store.create("programa", schema.hash, {"nome": "audited"})
+    store.set_pointer("programas/ativo", obj.hash)
+    assert store.audit() == {"objetos": 2, "arestas": 0, "eventos": 3, "ponteiros": 1}

@@ -58,6 +58,9 @@ OBJECT_TYPES = frozenset({"programa", "objetivo", "tarefa", "template", "card", 
 
 _DDL = """
 PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA busy_timeout = 5000;
 CREATE TABLE IF NOT EXISTS objetos (
   hash TEXT PRIMARY KEY CHECK(length(hash) = 64),
   tipo TEXT NOT NULL,
@@ -90,6 +93,8 @@ CREATE TRIGGER IF NOT EXISTS objetos_no_update BEFORE UPDATE ON objetos BEGIN SE
 CREATE TRIGGER IF NOT EXISTS objetos_no_delete BEFORE DELETE ON objetos BEGIN SELECT RAISE(ABORT, 'objetos are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS eventos_no_update BEFORE UPDATE ON eventos BEGIN SELECT RAISE(ABORT, 'eventos are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS eventos_no_delete BEFORE DELETE ON eventos BEGIN SELECT RAISE(ABORT, 'eventos are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS arestas_no_update BEFORE UPDATE ON arestas BEGIN SELECT RAISE(ABORT, 'arestas are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS arestas_no_delete BEFORE DELETE ON arestas BEGIN SELECT RAISE(ABORT, 'arestas are immutable'); END;
 """
 
 
@@ -293,6 +298,36 @@ class Store:
         if sha256(data).hexdigest() != digest:
             raise IntegrityError(f"blob hash mismatch: {digest}")
         return data
+
+    def audit(self) -> dict[str, int]:
+        """Fail closed if the persisted graph violates any kernel invariant."""
+        counts = {"objetos": 0, "arestas": 0, "eventos": 0, "ponteiros": 0}
+        for row in self.db.execute("SELECT hash FROM objetos ORDER BY hash"):
+            self.get(row[0])
+            counts["objetos"] += 1
+        for row in self.db.execute("SELECT de_hash, para_hash FROM arestas"):
+            child = self.get(row[0])
+            self.get(row[1])
+            if row[1] not in child.pais:
+                raise IntegrityError(f"edge is absent from child identity: {row[0]} -> {row[1]}")
+            counts["arestas"] += 1
+        expected_edges = sum(len(self.get(row[0]).pais) for row in self.db.execute("SELECT hash FROM objetos"))
+        if expected_edges != counts["arestas"]:
+            raise IntegrityError("one or more identity parents have no provenance edge")
+        for row in self.db.execute("SELECT objeto_hash, dados_json FROM eventos"):
+            self.get(row[0])
+            try:
+                canonical_json(json.loads(row[1]))
+            except (json.JSONDecodeError, ValidationError) as exc:
+                raise IntegrityError("invalid event payload") from exc
+            counts["eventos"] += 1
+        for row in self.db.execute("SELECT hash FROM ponteiros"):
+            self.get(row[0])
+            counts["ponteiros"] += 1
+        result = self.db.execute("PRAGMA integrity_check").fetchone()[0]
+        if result != "ok":
+            raise IntegrityError(f"sqlite integrity check failed: {result}")
+        return counts
 
 
 def _is_hash(value: str) -> bool:

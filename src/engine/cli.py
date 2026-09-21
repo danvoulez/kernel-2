@@ -40,6 +40,7 @@ def parser() -> argparse.ArgumentParser:
     lineage = commands.add_parser("lineage")
     lineage.add_argument("hash")
     lineage.add_argument("--direction", choices=["back", "forward"], default="back")
+    commands.add_parser("audit", help="verify all hashes, references, edges, events and SQLite pages")
     return root
 
 
@@ -64,8 +65,10 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "resolve":
                 record = store.resolve_pointer(args.name)
                 result = {"name": args.name, "hash": record.hash}
-            else:
+            elif args.command == "lineage":
                 result = store.lineage(args.hash, direction=args.direction)
+            else:
+                result = store.audit()
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
     except EngineError as exc:
