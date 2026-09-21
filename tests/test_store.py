@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import sqlite3
 
 from engine import Conflict, GENESIS_SCHEMA, IntegrityError, NotFound, Store, ValidationError
 from engine.model import canonical_json, content_hash
@@ -81,7 +82,5 @@ def test_blob_round_trip_and_tamper_detection(store: Store):
 def test_database_tamper_is_detected(store: Store):
     schema = template(store)
     obj = store.create("programa", schema.hash, {"nome": "safe"})
-    store.db.execute("UPDATE objetos SET corpo_json = ? WHERE hash = ?", ('{"nome":"unsafe"}', obj.hash))
-    with pytest.raises(IntegrityError):
-        store.get(obj.hash)
-
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        store.db.execute("UPDATE objetos SET corpo_json = ? WHERE hash = ?", ('{"nome":"unsafe"}', obj.hash))

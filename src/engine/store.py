@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS ponteiros (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_eventos_objeto_seq ON eventos(objeto_hash, seq);
 CREATE INDEX IF NOT EXISTS idx_arestas_para ON arestas(para_hash);
+CREATE TRIGGER IF NOT EXISTS objetos_no_update BEFORE UPDATE ON objetos BEGIN SELECT RAISE(ABORT, 'objetos are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS objetos_no_delete BEFORE DELETE ON objetos BEGIN SELECT RAISE(ABORT, 'objetos are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS eventos_no_update BEFORE UPDATE ON eventos BEGIN SELECT RAISE(ABORT, 'eventos are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS eventos_no_delete BEFORE DELETE ON eventos BEGIN SELECT RAISE(ABORT, 'eventos are append-only'); END;
 """
 
 
@@ -135,12 +139,18 @@ class Store:
     ) -> ObjectRecord:
         if tipo not in OBJECT_TYPES:
             raise ValidationError(f"unknown object type: {tipo}")
+        if not _is_hash(schema):
+            raise ValidationError("schema must be a lowercase sha256 hex digest")
+        if not isinstance(corpo, dict):
+            raise ValidationError("object body must be a JSON object")
         parents = tuple(pais)
         if len(set(parents)) != len(parents):
             raise ValidationError("duplicate parents are not allowed")
         canonical_json(corpo)
         with self.transaction():
             for parent in parents:
+                if not _is_hash(parent):
+                    raise ValidationError("parent must be a lowercase sha256 hex digest")
                 self._require_hash(parent)
             self._validate(schema, tipo, corpo)
             digest = content_hash(tipo=tipo, schema=schema, pais=parents, corpo=corpo)
@@ -204,6 +214,8 @@ class Store:
         return ObjectRecord(row["hash"], row["tipo"], row["schema_hash"], tuple(json.loads(row["pais_json"])), json.loads(row["corpo_json"]), row["criado_em"])
 
     def _require_hash(self, digest: str) -> None:
+        if not _is_hash(digest):
+            raise ValidationError("hash must be a lowercase sha256 hex digest")
         if not self._get_optional(digest):
             raise NotFound(f"object not found: {digest}")
 
@@ -259,6 +271,8 @@ class Store:
         return [dict(r) for r in self.db.execute(query, (digest,))]
 
     def put_blob(self, data: bytes) -> str:
+        if not isinstance(data, bytes):
+            raise ValidationError("blob must be bytes")
         digest = sha256(data).hexdigest()
         destination = self.blobs / digest
         if not destination.exists():
@@ -270,6 +284,8 @@ class Store:
         return digest
 
     def get_blob(self, digest: str) -> bytes:
+        if not _is_hash(digest):
+            raise ValidationError("blob hash must be a lowercase sha256 hex digest")
         path = self.blobs / digest
         if not path.is_file():
             raise NotFound(f"blob not found: {digest}")
@@ -277,3 +293,7 @@ class Store:
         if sha256(data).hexdigest() != digest:
             raise IntegrityError(f"blob hash mismatch: {digest}")
         return data
+
+
+def _is_hash(value: str) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
